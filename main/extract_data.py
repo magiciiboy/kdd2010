@@ -13,7 +13,9 @@ from main.db.structure import TransactionVector
 from main.db.mongo import *
 from main.utils import SimilarityUtil
 
-_db_loaded = False
+_db_loaded      = False
+_num_students   = 0
+_num_probs      = 0
 
 def extract_number(file_name, force=True):
     ''' Read KDD dataset and import to mongo with new structure '''
@@ -75,6 +77,7 @@ def extract_number(file_name, force=True):
     # Step 2: Import into database
     print "Dropping old data ..."
     MONGO_DATABASE.drop_collection('students')
+    MONGO_DATABASE.drop_collection('problems')
 
     collection_student = MONGO_DATABASE['students']
     num_student = collection_student.count()
@@ -85,8 +88,18 @@ def extract_number(file_name, force=True):
             collection_student.insert(STUDENTS[student_id])
         print "Imported %s students" % len(STUDENTS)
 
+    collection_problem = MONGO_DATABASE['problems']
+    num_problem = collection_problem.count()
+    print "Checking collection `problems`. Rows: %s" % num_problem
+    if not num_problem or force:
+        for prob_id in PROBLEMS:
+            collection_problem.insert({'prob_name': prob_id})
+        print "Imported %s problems" % len(PROBLEMS)
+
     print "Imported !"
 
+    no_prob = len(PROBLEMS)
+    no_student = len(STUDENTS)
 
     sparsity = 100.0 - (100.0 * no_line / (no_student * no_prob))
     sparsity_step = 100.0 - (100.0 * no_line / (no_student * no_step))
@@ -217,6 +230,10 @@ def _had_solved(student_id, prob_name):
     else:
         return -1
 
+
+def _init_matrix():
+    _load_dataset_deep()
+    print 'New dataset matrix'
 
 def _sim_students(s1, s2):
     num_sim = 0.0
