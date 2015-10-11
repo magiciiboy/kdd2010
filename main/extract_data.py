@@ -9,9 +9,13 @@ import sys, getopt
 from pymongo import Connection as MongoConnection
 
 from main.db.structure import *
+from main.db.structure import TransactionVector
 from main.db.mongo import *
+from main.utils import SimilarityUtil
 
-def extract_number(file_name, force=False):
+_db_loaded = False
+
+def extract_number(file_name, force=True):
     ''' Read KDD dataset and import to mongo with new structure '''
     # New structure in Mongo DB
     # students: {
@@ -44,14 +48,17 @@ def extract_number(file_name, force=False):
                 prob_step = prob_id + '_' + trans['step_name']
 
                 # Check whether student exists
+                prob_name = trans['prob_name']
                 if student_id not in STUDENTS:
                     no_student += 1
                     STUDENTS[student_id] = {
                         'student_id': student_id,
-                        'trans': [trans]
+                        'trans': {
+                            prob_name: trans
+                        }
                     }
                 else:
-                    STUDENTS[student_id]['trans'].append(trans)
+                    STUDENTS[student_id]['trans'][prob_name] = trans
 
                 # Check whether problem exists
                 if prob_id not in PROBLEMS:
@@ -120,17 +127,22 @@ def calculate_similarity():
 
     print 'Loaded %s students' % no_student
     print 'Calculating similarity ...'
+    idx = 0
     for id1, st1 in STUDENTS.iteritems():
         sims = {}
-        print '- Student %s ' % id1
+        # print '- Student %s ' % id1
+        sys.stdout.write("\rProcessing: {0:.0f}%".format((idx+1) * 100/no_student))
+        sys.stdout.flush()
         for id2, st2 in STUDENTS.iteritems():
             if id1 != id2:
                 sim = _sim_students(st1, st2)
                 if sim:
-                    print '\t - Similarity to student %s: %s' % (id2, sim)
+                    # print '\t - Similarity to student %s: %s' % (id2, sim)
                     sims[id2] = sim
         STUDENTS[id1]['sims'] = sims
-    print 'Storing similarity ...'
+        idx += 1
+
+    print '\nStoring similarity ...'
     MONGO_DATABASE.drop_collection('students')
     collection_student = MONGO_DATABASE['students']
     for sid in STUDENTS:
@@ -138,29 +150,98 @@ def calculate_similarity():
 
     print 'Done'
 
-    # Delete old db
+def prob_solve_single(student_id, prob_name):
+    '''
+    Calculate probability of a student when solving a problem 
+    :param student_id: Student ID
+    :param prob_name: Student
+    '''
+    print '-- Calculate probability --'
+    _load_dataset_deep()
+
+    s = _had_solved(student_id, prob_name)
+    if s == -1:
+        sim_students = STUDENTS[student_id]['sims']
+        dot_val = 0.0
+        sum_sim = 0.0
+        sum_std = 0.0
+        for std, sim_std in sim_students.iteritems():
+            std_has_solve = _had_solved(std, prob_name)
+            if std_has_solve != -1:
+                print 'Sim: ', std, sim_std, std_has_solve
+                dot_val += sim_std * std_has_solve
+                sum_sim += sim_std
+                sum_std += 1.0
+            else:
+                dot_val += 0.0
+                sum_sim += 0.0
+                sum_std += 0.0
+        if sum_sim:
+            prob = dot_val / sum_std
+        else:
+            prob = 0.0
+    else:
+        prob = s
+
+    return prob
+
+def _load_dataset_deep():
+    ''' Load dataset from mongo and map in memory '''
+    global _db_loaded
+    if _db_loaded:
+        return 0
+    else:
+        print 'Loading data from database ...'
+        students = load_students()
+        print 'Maping students ...'
+        no_student = 0
+        for student in students:
+            STUDENTS[student['student_id']] = student
+            no_student += 1
+
+        _db_loaded = True
+        return 1
+
+def _had_solved(student_id, prob_name):
+    '''
+    Check whether a student solved a problem
+    :param student_id: Student ID
+    :param prob_name: Student
+    '''
+    if STUDENTS and student_id in STUDENTS and STUDENTS[student_id]['trans'] \
+        and prob_name in STUDENTS[student_id]['trans']:
+        if STUDENTS[student_id]['trans'][prob_name]['trans_corrects']:
+            return 1.0
+        else:
+            return 0.0
+    else:
+        return -1
+
 
 def _sim_students(s1, s2):
-    num_same = 0.0
-    num_solve_same = 0.0
+    num_sim = 0.0
+    sum_sim = 0.0
     trans1 = s1['trans']
     trans2 = s2['trans']
 
-    for t1 in trans1:
-        for t2 in trans2:
-            if t1['prob_name'] == t2['prob_name']:
-                num_same += 1.0
-                if t1['trans_corrects'] > 0 and t1['trans_corrects'] > 0:
-                    num_solve_same += 1.0
+    for t1, tr1 in trans1.iteritems():
+        for t2, tr2 in trans2.iteritems():
+            if t1 == t2:
+                num_sim += 1.0
+                # Compute similarity
+                v1 = TransactionVector.from_trans(tr1)
+                v2 = TransactionVector.from_trans(tr2)
+                sim = SimilarityUtil.cos(v1, v2)
+                sum_sim += sim
 
-    if num_same:
-        sim = num_solve_same / num_same
-    else:
-        sim = 0.0
-    return sim
+    aggr_sim = 0.0
+    if num_sim:
+        aggr_sim = sum_sim / num_sim
+
+    return aggr_sim
 
 
-def _nomalize_student_trans(s):
+def _nomalize_trans(s):
     return s
 
 
